@@ -86,3 +86,52 @@ class FactorizedMemoryMLP(Module):
                 x = F.gelu(x)
             x = x@weight1@weight2
         return x
+
+class MemorySwigGluMLP(Module):
+    def __init__(self,dim,depth=1,expansion_factor=4.):
+        super().__init__()
+        dim_inner = int(dim*expansion_factor*2/3)
+        weights = []
+        for _ in range(depth):
+            weights.append(ParameterList([
+                Parameter(torch.randn(dim,dim_inner*2)),
+                Parameter(torch.randn(dim_inner,dim)),
+            ]))
+        self.weights = ParameterList(weights)
+        self.norm = LayerNorm(dim)
+    def forward(self,x):
+        for w1,w2 in self.weights:
+            residual = x 
+            x,gates = (x@w1).chunk(2,dim=-1)
+            x = x*F.gelu(gates)
+            x = x@w2
+            x  = x + residual
+        return self.norm(x)
+
+class MemoryAttention(Module):
+    def __init__(self,dim,scale=8.,expansion_factor=2.):
+        super().__init__()
+        self.scale= scale 
+        dim_ff_hidden = int(dim*expansion_factor)
+        self.weights = ParameterList([
+            Parameter(torch.randn(dim,dim)),
+            Parameter(torch.randn(dim,dim)),
+            Parameter(torch.randn(dim,dim)),
+            Parameter(torch.randn(dim,dim_ff_hidden)),
+            Parameter(torch.randn(dim_ff_hidden,dim)),
+        ])
+        for weight in self.weights:
+            nn.init.xavier_uniform_(weight)
+    def forward(self,x):
+        wq,wk,wv,ffw1,ffw2 = self.weights
+        q = l2norm(x@wq)
+        k = l2norm(x@wk)
+        v = x@wv
+        attn_out = F.scaled_dot_product_attention(
+            q,k,v,
+            scale = self.scale,
+            is_casual = True
+        )
+        h = F.gelu(x@ffw1)
+        ff_out = h@ffw2
+        return attn_out + ff_out 
